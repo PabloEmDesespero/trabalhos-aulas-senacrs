@@ -3,6 +3,9 @@ const knex = require("knex")
 const http_errors = require("http-errors")
 const jwt = require("jsonwebtoken")
 
+// ==========================================
+// CONFIGURAÇÃO INICIAL
+// ==========================================
 const PORT = 8001
 const HOSTNAME = "localhost"
 const JWT_SECRET = "seu_secret_jwt_aqui"
@@ -11,6 +14,7 @@ const api = express()
 api.use( express.json() )
 api.use( express.urlencoded( { extended : true } ) )
 
+// Conexão com banco de dados MySQL via Knex
 const conn = knex( {
     client : "mysql" ,
     connection : {
@@ -19,8 +23,12 @@ const conn = knex( {
         password : "" ,
         database : "loja_26_1"
     }
-} )
+} ) 
 
+// ==========================================
+// JWT: Gera token de autenticação
+// Token válido por 7 dias com userId e email
+// ==========================================
 function generateToken(userId, email) {
     return jwt.sign(
         { userId, email },
@@ -29,6 +37,10 @@ function generateToken(userId, email) {
     )
 }
 
+// ==========================================
+// JWT: Valida se token é legítimo e não expirou
+// Retorna null se token inválido/expirado
+// ==========================================
 function verifyToken(token) {
     try {
         return jwt.verify(token, JWT_SECRET)
@@ -37,6 +49,11 @@ function verifyToken(token) {
     }
 }
 
+// ==========================================
+// MIDDLEWARE: Protege endpoints que requerem autenticação
+// Verifica se usuário tem token válido antes de deixar acessar
+// Se válido, salva dados do usuário em req.user
+// ==========================================
 function authMiddleware(req, res, next) {
     const authHeader = req.headers.authorization
     
@@ -44,6 +61,7 @@ function authMiddleware(req, res, next) {
         return next(http_errors(401, "Token não fornecido"))
     }
 
+    // Extrai token do header "Authorization: Bearer TOKEN"
     const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader
     const decoded = verifyToken(token)
 
@@ -51,14 +69,23 @@ function authMiddleware(req, res, next) {
         return next(http_errors(401, "Token inválido ou expirado"))
     }
 
-    req.user = decoded
+    req.user = decoded  // Agora outros endpoints podem acessar req.user.userId
     next()
 }
 
+// ==========================================
+// HOME - Boas-vindas
+// ==========================================
 api.get( "/" , (req, res, next) => {
     res.json( { resposta : 'Seja bem-vindo(a) à nossa API de Links' } )
 } )
 
+// ==========================================
+// AUTENTICAÇÃO: Registrar novo usuário
+// POST /auth/register
+// Body: { email, password, nome }
+// Retorna: token JWT para usar em outros endpoints
+// ==========================================
 api.post( "/auth/register" , (req, res, next) => {
     const { email, password, nome } = req.body
 
@@ -66,6 +93,7 @@ api.post( "/auth/register" , (req, res, next) => {
         return next(http_errors(400, "Email, nome e senha são obrigatórios"))
     }
 
+    // Verifica se email já existe no banco
     conn("usuarios")
         .where("email", email)
         .first()
@@ -74,6 +102,7 @@ api.post( "/auth/register" , (req, res, next) => {
                 return next(http_errors(409, "Usuário já existe"))
             }
 
+            // Insere novo usuário
             conn("usuarios")
                 .insert({
                     email,
@@ -85,6 +114,7 @@ api.post( "/auth/register" , (req, res, next) => {
                     if (!dados) {
                         return next(http_errors(404, "Erro ao criar usuário"))
                     }
+                    // Gera token automaticamente após registrar
                     const token = generateToken(dados[0], email)
                     res.status(201).json({
                         resposta: "Usuário criado com sucesso",
@@ -97,6 +127,12 @@ api.post( "/auth/register" , (req, res, next) => {
         .catch(next)
 })
 
+// ==========================================
+// AUTENTICAÇÃO: Login com email e senha
+// POST /auth/login
+// Body: { email, password }
+// Retorna: token JWT válido por 7 dias
+// ==========================================
 api.post( "/auth/login" , (req, res, next) => {
     const { email, password } = req.body
 
@@ -104,6 +140,7 @@ api.post( "/auth/login" , (req, res, next) => {
         return next(http_errors(400, "Email e senha são obrigatórios"))
     }
 
+    // Busca usuário com esse email E essa senha
     conn("usuarios")
         .where("email", email)
         .where("password", password)
@@ -113,6 +150,7 @@ api.post( "/auth/login" , (req, res, next) => {
                 return next(http_errors(401, "Email ou senha incorretos"))
             }
 
+            // Gera token para usar em requests autenticados
             const token = generateToken(usuario.id, usuario.email)
             res.json({
                 resposta: "Login realizado com sucesso",
@@ -123,6 +161,12 @@ api.post( "/auth/login" , (req, res, next) => {
         .catch(next)
 })
 
+// ==========================================
+// AUTENTICAÇÃO: Google OAuth2
+// POST /auth/google/callback
+// Simula callback do Google após autenticação
+// Se usuário existe → login, Se não existe → registra
+// ==========================================
 api.post( "/auth/google/callback" , (req, res, next) => {
     const { googleId, email, nome } = req.body
 
@@ -130,12 +174,13 @@ api.post( "/auth/google/callback" , (req, res, next) => {
         return next(http_errors(400, "googleId e email são obrigatórios"))
     }
 
+    // Verifica se usuário Google já tem conta
     conn("usuarios")
         .where("google_id", googleId)
         .first()
         .then(usuario => {
             if (usuario) {
-                // Usuário já existe
+                // Usuário já existe, faz login
                 const token = generateToken(usuario.id, usuario.email)
                 return res.json({
                     resposta: "Autenticação Google bem-sucedida",
@@ -144,7 +189,7 @@ api.post( "/auth/google/callback" , (req, res, next) => {
                 })
             }
 
-            // Criar novo usuário
+            // Primeira vez: cria novo usuário com Google
             conn("usuarios")
                 .insert({
                     google_id: googleId,
@@ -165,7 +210,13 @@ api.post( "/auth/google/callback" , (req, res, next) => {
         .catch(next)
 })
 
+// ==========================================
+// LINKS: Listar todos (PÚBLICO - sem autenticação)
+// GET /link
+// Retorna: array de todos os links com suas categorias
+// ==========================================
 api.get( "/link" , (req, res, next) => {
+    // JOIN com categoria pra pegar nome da categoria de cada link
     conn("links")
         .leftJoin("categoria" , "links.categoria_id" , "=" , "categoria.id")
         .select("links.*" , "categoria.nome AS categoria")
@@ -178,6 +229,11 @@ api.get( "/link" , (req, res, next) => {
         .catch( next )
 })
 
+// ==========================================
+// LINKS: Buscar link por ID (PÚBLICO)
+// GET /link/:idLink
+// Retorna: dados específicos do link solicitado
+// ==========================================
 api.get( "/link/:idLink" , (req, res, next) => {
     const id = req.params.idLink
     conn("links")
@@ -189,13 +245,21 @@ api.get( "/link/:idLink" , (req, res, next) => {
         .catch( next )
 })
 
+// ==========================================
+// LINKS: Criar novo link (REQUER AUTENTICAÇÃO)
+// POST /link
+// authMiddleware verifica token antes de executar
+// Body: { url, titulo, categoria_id (opcional) }
+// Retorna: ID do link criado
+// IMPORTANTE: Link é associado ao usuário autenticado (req.user.userId)
+// ==========================================
 api.post( "/link" , authMiddleware , (req, res, next) => {
     conn("links")
         .insert({
             url: req.body.url,
             titulo: req.body.titulo,
-            categoria_id: req.body.categoria_id || null,  // Aceita null
-            usuario_id: req.user.userId
+            categoria_id: req.body.categoria_id || null,  // Aceita null (sem categoria)
+            usuario_id: req.user.userId  // Associa link ao usuário autenticado
         })
         .then( dados => {
             if( !dados ){
@@ -209,12 +273,19 @@ api.post( "/link" , authMiddleware , (req, res, next) => {
         .catch( next )
 })
 
+// ==========================================
+// LINKS: Atualizar link (REQUER AUTENTICAÇÃO)
+// PUT /link/:idLink
+// SEGURANÇA: Só pode atualizar seu próprio link
+// Verifica usuario_id do link contra usuário autenticado
+// ==========================================
 api.put( "/link/:idLink" , authMiddleware , (req, res, next) => {
     const idLink = req.params.idLink
     
+    // Atualiza APENAS se o link pertence ao usuário autenticado
     conn("links")
         .where( "id" , idLink )
-        .where( "usuario_id" , req.user.userId )
+        .where( "usuario_id" , req.user.userId )  // Segurança: só seu próprio link
         .update( req.body )
         .then( dados => {
             if( !dados ){
@@ -227,11 +298,18 @@ api.put( "/link/:idLink" , authMiddleware , (req, res, next) => {
         .catch( next )
 })
 
+// ==========================================
+// LINKS: Deletar link (REQUER AUTENTICAÇÃO)
+// DELETE /link/:idLink
+// SEGURANÇA: Só pode deletar seu próprio link
+// ==========================================
 api.delete( "/link/:idLink" , authMiddleware , (req, res, next) => {
     const id = req.params.idLink
+    
+    // Deleta APENAS se o link pertence ao usuário autenticado
     conn("links")
         .where( "id" , id )
-        .where( "usuario_id" , req.user.userId )
+        .where( "usuario_id" , req.user.userId )  // Segurança: só seu próprio link
         .delete()
         .then( dados => {
             if( !dados ){
@@ -244,12 +322,22 @@ api.delete( "/link/:idLink" , authMiddleware , (req, res, next) => {
         .catch( next )
 })
 
+// ==========================================
+// CATEGORIAS: Listar todas (PÚBLICO)
+// GET /categoria
+// Retorna: array de todas as categorias
+// ==========================================
 api.get( "/categoria" , (req, res, next) => {
     conn("categoria")
         .then( dados => res.json( dados ) )
         .catch( next )
 })
 
+// ==========================================
+// CATEGORIAS: Buscar categoria por ID (PÚBLICO)
+// GET /categoria/:idCat
+// Retorna: dados da categoria específica
+// ==========================================
 api.get( "/categoria/:idCat" , (req, res, next) => {
     const id = req.params.idCat
     conn("categoria")
@@ -259,6 +347,11 @@ api.get( "/categoria/:idCat" , (req, res, next) => {
         .catch( next )
 })
 
+// ==========================================
+// CATEGORIAS: Deletar categoria (PÚBLICO)
+// DELETE /categoria/:idCat
+// Qualquer um pode deletar categorias
+// ==========================================
 api.delete( "/categoria/:idCat" , (req, res, next) => {
     const id = req.params.idCat
     conn("categoria")
@@ -275,6 +368,12 @@ api.delete( "/categoria/:idCat" , (req, res, next) => {
         .catch( next )
 })
 
+// ==========================================
+// CATEGORIAS: Criar nova categoria (PÚBLICO)
+// POST /categoria
+// Body: { nome }
+// Retorna: ID da categoria criada
+// ==========================================
 api.post( "/categoria" , (req, res, next) => {
     conn("categoria")
         .insert( req.body )
@@ -290,6 +389,11 @@ api.post( "/categoria" , (req, res, next) => {
         .catch( next )
 })
 
+// ==========================================
+// CATEGORIAS: Atualizar categoria (PÚBLICO)
+// PUT /categoria/:idCat
+// Body: { nome }
+// ==========================================
 api.put( "/categoria/:idCat" , (req, res, next) => {
     const idCategoria = req.params.idCat
     conn("categoria")
@@ -306,6 +410,9 @@ api.put( "/categoria/:idCat" , (req, res, next) => {
         .catch( next )
 })
 
+// ==========================================
+// INICIAR SERVIDOR
+// ==========================================
 api.listen( PORT , ()=>{
     console.log( `Servidor rodando em: http://${HOSTNAME}:${PORT}`)
 })
